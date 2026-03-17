@@ -1,0 +1,5 @@
+CLASS ybp_bookingsupplement_d DEFINITION PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF yr_travel_d.
+ENDCLASS.
+
+CLASS ybp_bookingsupplement_d IMPLEMENTATION.
+ENDCLASS.

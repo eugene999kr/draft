@@ -1,0 +1,207 @@
+managed; // implementation in class zbp_r_travel_d unique;
+strict ( 2 );
+with draft;
+define behavior for YR_TRAVEL_D //alias <alias_name>
+implementation in class ybp_r_travel_d unique
+persistent table /dmo/a_travel_d
+draft table ydr_travel_d
+lock master
+total etag LastChangedAt
+authorization master ( instance, global )
+etag master LastChangedAt
+{
+  create ( precheck ); //travel생성시에 입력하는 값에 대한 사전체크
+  update ( precheck ); //travel변경시에 입력하는 값에 대한 사전체크
+  delete;
+  //처음 bedf를 base view에서 생성하면, key field인 TravelUUID는 read only로 되어있는데, warning이 뜨면서 key인 read only필드는 numbering : managed를 해야한다고 뜸
+  //즉 자동으로 번호를 채우는 managed early numbering을 쓰라고 하는 것이다.
+  field ( numbering : managed, readonly ) TravelUUID;           // global, update, none, instance 중에서 선택 가능 update로 하면 update auth체크로직을 동일하게 탄다는 뜻임
+  field (readonly) TravelID, OverallStatus, TotalPrice, LastChangedAt, LocalCreatedAt, LocalCreatedBy, LocalLastChangedAt, LocalLastChangedBy;
+  field (mandatory) CustomerID;
+
+  association _Booking { create ( authorization : update ); with draft; }  //create 다음에 () 에 어느 auth를 사용할지를 지정할 수 있는데, global도 되고, update도 된다.
+
+  action ( authorization : update ) acceptTravel result [1] $self;
+  action ( authorization : update ) rejectTravel result [1] $self;
+ //abstract entity type을 사용해서 parameter를 지정해 놓으면 그 필드를 popup으로 입력받고 그 값으로 action을 실행할 수 있다.
+ // deduct discount를 실행해서 여기 yr_travel_d를 modify 하면 determination에 지정한 조건이 충족되어(on modify field bookingfee) calcTotPrice 가 호출된다.
+  action ( authorization : update ) deductDiscount parameter ya_Deduct_Discount result [1] $self;
+  internal action reCalcTotalPrice; //내부적으로 사용하기 위한 action임
+
+//1.determination은 instance의 값을 변경하기 위해 사용하는데, on save와 on modify 두가지가 있다.
+//on save는 저장버튼 클릭시에 save seq에서 실행된다. 여기서는 입력값 오류가 없는 상태 최종적으로 값을 넣어줄때 사용한다.
+//on modify인 경우 save seq와는 상관 없다. 단,  저장할때 실행되기도 하지만, eml statement를 만나도 실행된다.
+// on modify create를 하면 create해서 저장할때만 실행되는 것 처럼 보이자만, on modify이기 때문에 update를 추가해 놓으면,
+// accept travel에서 modify eml statement를 실행하면 바로 실행된다.
+// create로만 해 놓으면 처음 저장될때만 실행되므로 save seq에서 실행된다고 오해할 수 있다.
+
+// on save는 update만 지정하고 쓸 수는 없다. save seq를 가려면 처음에 create가 없이 되지 않는다.
+
+//determination on save는 save seq안에 determination on save 에서 실행되고
+//determination on modify 는 save seq이전 interactional phase에서 early numbering 다음에 determination on modify 에서 실행된다.
+//즉 저장하면 on modify가 먼저 실행된다.
+  determination setTravelId on save { create; }
+  determination setStatusOpen on modify { create; }
+
+ //determination calcTotPrice on modify { update; field BookingFee, CurrencyCode;} //이렇게 해 놓으면 필드 지정해도 모든 필드 업데이트 될때마다 호출된다.
+ // update; 를 해 놓으면 어떤 필드든 update할때마다 호출하는 것이고, create; 하면 생성할때, 그 후 field... 하면 그 필드는 update될때마다... 이렇게 호출된다.
+ // 즉 create; field... 이렇게 하는것이 처음에 한번, 그다음에 그 필드 수정될때 마다 호출... 이런 개념이 된다.
+ //trigger point가 아래 조건이 맞으면 자동으로 호출되는데, deduct discount에서 booking fee modify eml statement를 실행하면 자동으로 실행된다.
+  determination calcTotPrice on modify { create; field BookingFee, CurrencyCode;} //
+
+//2. validation은 값을 입력하고 save클릭할때 입력값의 정합성을 체크하는 것임 만약 ui annotation으로 value check이 들어있으면 그게 먼저 먹히고
+//여기서는 저장할때 최종적으로 체크하는 것임 on modify가 안됨 무조건 on save만 됨
+//단, 여기서는 determine action prepare에서 지정해서, 실제로 ui에서 커서를 두고 엔터를 치면 실행됨 즉 prepare 가 호츌될때마다 실행 된다고 보면 됨
+//dtermine에 지정 안하면 저장할때만 val이 호출됨
+  validation validateCustomer on save { create; field CustomerID; }
+
+////////////////////////////////////////////////
+//실제로 디버깅을 해보면, 처음 create를 클릭하면 set_status_open이 실행되고, 다음으로 calcTotPrice 살행되고,(det on modify)
+//값들을 입력하고 엔터치면 validate_customer가 실행되고,저장을 하면 set_travelId가 실행된다.
+//즉 det on modify, val on save, det on save 이렇게 실행된다.(val on save는 실제로는 save seq가 아니라 interactional phase에서 실행됨. prepare애서 지정해서.. )
+
+
+// booking fee의 변경이 일어나면 ui상에서 total price도 변경되게 함(원래는 refresh해줘야 바뀐게 보임)
+// caltotal 로직에서 currency를 입력하지 않으면 계산하지 않는데, 금액을 입력하고 엔터쳐도 total은 계산하지 않게 되고, 다시 currency를 입력하면
+// side effect가 먹히지 않으므로 field에 currency code를 추가해 줘야 전체적인 오류가 없다.
+  side effects { field  BookingFee  affects field TotalPrice;
+                 field  CurrencyCode  affects field TotalPrice; }
+
+//draft를 사용하면, 필드에서 입력하고 다른필드로 커서를 옮기거나 엔터를 치면 일정 시간이 지나서(한 몇초?) traft table에 해당 내용이 저장된다. determination on modify 도 실행된다.
+//(prepare에 지정한 val on save도 실행됨)
+//(그래서 생성 시 agencyid를 입력하고 엔터를 치면 agency id의 create precheck로 권한 점검하고, 또 val customer가 실행되고, 값이 없으므로 또 거기서도 오류 뜨게된다.
+//(det on save는 save seq에서, val은 on save만 되는데, 실제 val은 on save가 on save가 아님 실제론 on modify처럼 움직임 : 여기 prepare에서 지정 한 경우만)
+//draft action은 lock master entity에 이렇게 정의 되어야한다. 이경우 yr_trave_d의 behvdef인 root entity에 lock master로 지정되어있으므로 여기에 정의한다.
+    draft action Resume with additional implementation;
+    draft action Edit with additional implementation;
+//draft instance를 modify 할때도 determination on modify가 실행되는데, activate 하면서 active instance를 만들면서 또 실행되는것을 막는게 optimize.
+
+//1. det on modify는 draft작업중에 modify하면서 실행 되는데, optimise를 하지 않으면 activate하면서 prepare에서 또 실행된다.
+//2. draft에서 저장하면, activate의 prepare에서 det on modify, det on save, val 모두 실행된다. 그리고 save seq에서 또 실행된다.
+//   그런데 optimize하고 determine action prepare에 지정한 것은 save seq에서 또 실행하지 않는다.
+
+// on save의 경우 draft에서 저장하면 activate하면서 prepare에서 on save로 지정한 det, val 실행되고, 다시 active instance의 save seq에서 또 실행되는데,
+//optimise하면 save seq에서 실행안한다.
+    draft action Activate optimized with additional implementation;
+    draft action Discard with additional implementation;
+
+//activate를 하게되면 prepare를 먼저 실행하는데, 이때 determination이나 validation을 실행하게 한다.
+//val, det on save로 지정한 것들은 여기서 지정해 줘야한다.
+//이부분을 지정하지 않으면 validation on save 정의한 부분에 warning이 뜬다. prepare에 validation을 하라고...
+    draft determine action Prepare {
+       validation validateCustomer;
+       validation yr_booking_d~validateCustomer;
+       validation yr_bookingSupplement_d~validateSupplement;
+     }
+
+//정리하면, val은 on save만 있고 det는 on save, on modify 둘다 있고, on modify는 draft에서도 실행되고, 저장버튼 클릭하면 on modify, on save 둘다 호출된다.
+//저장버튼은 activate하기 직전 prepare에서 실행하는 것이고, optimize하면 on modify 즉 det를 prepare에서 또 실행하지는 않고,
+//determine action prepare 으로 지정하면 save seq에서 또 실행하는 것으 막는다.
+
+//최종적으로 정리하면,  det on modify 즉 변경상황은 optimize하면 activate할때 prepare에서 추가로 실행되는 것을 막는다.
+// 또한, det on save, val on save는 optimize하면 prepare에서 실행하고 추가로 save seq에서 실행되는것을 막는다
+
+  mapping for /dmo/a_travel_d
+    {
+      AgencyID           = agency_id;
+      BeginDate          = begin_date;
+      BookingFee         = booking_fee;
+      CurrencyCode       = currency_code;
+      CustomerID         = customer_id;
+      Description        = description;
+      EndDate            = end_date;
+      LastChangedAt      = last_changed_at;
+      LocalCreatedAt     = local_created_at;
+      LocalCreatedBy     = local_created_by;
+      LocalLastChangedAt = local_last_changed_at;
+      LocalLastChangedBy = local_last_changed_by;
+      OverallStatus      = overall_status;
+      TotalPrice         = total_price;
+      TravelID           = travel_id;
+      TravelUUID         = travel_uuid;
+    }
+
+}
+
+define behavior for YR_BOOKING_D //alias <alias_name>
+implementation in class ybp_booking_d unique
+persistent table /dmo/a_booking_d
+draft table ydr_booking_d
+lock dependent by _Travel
+authorization dependent by _Travel
+etag master LocalLastChangedAt
+{
+  update;
+  delete;
+  association _BookingSupplement { create ( authorization : update ); with draft; }
+
+  association _Travel{ with draft; }
+
+  field ( numbering : managed, readonly ) BookingUUID;
+  field ( readonly ) TravelUUID, BookingID, BookingDate, LocalLastChangedAt;
+  field (mandatory) CustomerID;
+
+  determination setBookingNumber on save { create; }
+  determination setBookingDate on save { create; }
+  determination calculateTotalPrice on modify { create; field FlightPrice, CurrencyCode; }
+
+  validation validateCustomer on save { create; field CustomerID; }
+
+  side effects { field FlightPrice affects field _Travel.TotalPrice; }
+
+
+  mapping for /dmo/a_booking_d
+    {
+      AirlineID          = carrier_id;
+      BookingDate        = booking_date;
+      BookingID          = booking_id;
+      BookingStatus      = booking_status;
+      BookingUUID        = booking_uuid;
+      ConnectionID       = connection_id;
+      CurrencyCode       = currency_code;
+      CustomerID         = customer_id;
+      FlightDate         = flight_date;
+      FlightPrice        = flight_price;
+      LocalLastChangedAt = local_last_changed_at;
+      TravelUUID         = parent_uuid;
+    }
+}
+
+define behavior for YR_BookingSupplement_D //alias <alias_name>
+implementation in class ybp_bookingsupplement_d unique
+persistent table /dmo/a_bksuppl_d
+draft table ydr_bksuppl_d
+lock dependent by _Travel
+authorization dependent by _Travel
+etag master LocalLastChangedAt
+{
+  update;
+  delete;
+  association _Booking { with draft; }
+  association _Travel { with draft; }
+
+
+  field ( numbering : managed, readonly ) BookSupplUUID;
+  field ( readonly ) TravelUUID, BookingUUID, BookingSupplementID,LocalLastChangedAt;
+  field (mandatory) SupplementID;
+
+// on save는 save sequence에서 실행되고, on modify는 수정 중에 실행됨
+  determination setBookSupplNumber on save { create; }
+  determination calculateTotalPrice on modify { create; field BookSupplPrice, CurrencyCode; }
+
+  validation validateSupplement on save { create; field SupplementID; }
+
+  side effects { field BookSupplPrice affects field _Travel.TotalPrice; }
+
+  mapping for /dmo/a_bksuppl_d
+    {
+      BookSupplPrice      = price;
+      BookSupplUUID       = booksuppl_uuid;
+      BookingSupplementID = booking_supplement_id;
+      BookingUUID         = parent_uuid;
+      CurrencyCode        = currency_code;
+      LocalLastChangedAt  = local_last_changed_at;
+      SupplementID        = supplement_id;
+      TravelUUID          = root_uuid;
+    }
+}

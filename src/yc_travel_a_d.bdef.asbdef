@@ -1,0 +1,47 @@
+projection;
+
+// v2 v4 service가 다른데, v4를 사용하면 draft기능이 기본이고, create시에 use by association으로 무조건 지정되어야한다.
+//구글에 sap rap service binding preview and BAS execution different in 2 step child entity create action
+//로 조회하면 bas에서 조회하는것과 preview로 조회하는것의 차이가 있다고 나오는데, 그중 하나가 draft이고, 여기 draft에서 v4 service binding을 생성하면
+// 다른곳과 다르게 잘 된다. 다른곳 managed, unmanaged에서는 child create가 안되는 문제가 발생한다.
+// 내용을 보면 bas 즉 fiori preview에서는 more strictly하게 save를 관리한다고 되어있다. 그래서
+// parent가 draft상태일때 child를 create할때 draft가 아니면 disable하게 되는 상황이 생기는 것이다.
+strict ( 2 );
+use draft;
+use side effects; //base bedf에 선언해도 여기서 use해줘야한다. action도 마찬가지
+define behavior for YC_TRAVEL_A_D //alias <alias_name>
+{
+  use create;
+  use update;
+  use delete;
+
+  use action acceptTravel;
+  use action rejectTravel;
+  use action deductDiscount;
+
+  use action Activate;
+  use action Discard;
+  use action Edit;
+  use action Prepare;
+  use action Resume;
+
+  use association _Booking { create; with draft; }
+}
+
+define behavior for YC_Booking_A_D //alias <alias_name>
+{
+  use update;
+  use delete;
+
+  use association _Travel {with draft;}
+  use association _BookingSupplement { create; with draft; }
+}
+
+define behavior for YC_BookingSupplement_A_D //alias <alias_name>
+{
+  use update;
+  use delete;
+
+  use association _Travel {with draft;}
+  use association _Booking {with draft;}
+}
